@@ -10,7 +10,7 @@ for one repository and ingests that repository's **webhooks**.
 - HMAC-SHA256 webhook verification with constant-time comparison, and a
   delivery store that makes redelivery a no-op.
 - Rate-limit aware, paginating, retry-aware GitHub client with conditional GET.
-- 320 automated tests; 96% line coverage; 16 of them run against real GitHub.
+- 322 automated tests; 96% line coverage; 16 of them run against real GitHub.
 
 **Stack:** Python 3.11+ / FastAPI / httpx / SQLite. **Testing:** pytest + respx.
 
