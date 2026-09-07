@@ -12,7 +12,8 @@ for one repository and ingests that repository's **webhooks**.
 - Rate-limit aware, paginating, retry-aware GitHub client with conditional GET.
 - 322 automated tests; 96% line coverage; 16 of them run against real GitHub.
 
-**Stack:** Python 3.11+ / FastAPI / httpx / SQLite. **Testing:** pytest + respx.
+**Stack:** Python 3.11+ / **FastAPI** / httpx / SQLite.
+**Testing:** pytest + respx. **API examples:** HTTPie. **Tunnel:** ngrok.
 
 ---
 
@@ -56,10 +57,10 @@ Then:
 freshly generated `WEBHOOK_SECRET` on first run, and reuses the virtualenv
 afterwards. `./scripts/run.sh --docker` does the same thing in a container.
 
-To exercise every route against your real repository in one go:
+To exercise every route against your real repository in one go, with HTTPie:
 
 ```bash
-./scripts/smoke.sh
+make examples          # or: ./scripts/httpie_examples.sh
 ```
 
 ---
@@ -146,22 +147,36 @@ If you leak a token, revoke it immediately at
 
 ## API reference with examples
 
-Base URL: `http://localhost:${PORT}`. Every example below is copy-pasteable.
+Base URL: `http://localhost:${PORT}`. Every example is HTTPie and is
+copy-pasteable as-is. `make install` puts HTTPie in `.venv/bin`, so no
+system-wide install is needed:
+
+```bash
+make install                       # provides .venv/bin/http
+export PATH="$PWD/.venv/bin:$PATH" # or: pip install httpie
+```
+
+HTTPie shorthand used throughout: `:8000/issues` means
+`http://localhost:8000/issues`; `key=value` is a JSON body field;
+`key:=value` is a raw JSON value (numbers, arrays, objects); `key==value` is a
+query parameter; `Header:value` is a request header.
 
 Clients of this API are unauthenticated — it is meant to run on localhost or
 behind your own gateway. The service holds the GitHub credential; it never
 accepts one from the caller.
 
+> **Run every example at once.** `./scripts/httpie_examples.sh` drives all of
+> the below against a running service and asserts the expected status for each
+> — 26 checks including the webhook signature and idempotency cases. It is the
+> runnable equivalent of an API collection.
+
 ### 1. `POST /issues` — create
 
 ```bash
-curl -i -X POST http://localhost:8000/issues \
-  -H 'Content-Type: application/json' \
-  -d '{
-        "title": "Rate limiter drops the Retry-After header",
-        "body":  "Reproduced on main at 0f21ac9.",
-        "labels": ["bug", "gateway"]
-      }'
+http POST :8000/issues \
+  title="Rate limiter drops the Retry-After header" \
+  body="Reproduced on main at 0f21ac9." \
+  labels:='["bug", "gateway"]'
 ```
 
 ```http
@@ -170,26 +185,35 @@ Location: /issues/12
 X-Request-ID: 8f14e45fceea167a5a36dedd4bea2543
 X-RateLimit-Remaining: 4993
 
-{"number":12,"id":2451900001,"title":"Rate limiter drops the Retry-After header",
- "body":"Reproduced on main at 0f21ac9.","state":"open","state_reason":null,
- "labels":[{"name":"bug","color":"d73a4a","description":"Something isn't working"}],
- "user":{"login":"mikechau1","id":583920,"type":"User", "...":"..."},
- "assignees":[],"comments":0,"locked":false,
- "html_url":"https://github.com/mikechau1/cmpe272-issues-gw/issues/12",
- "created_at":"2026-09-06T18:20:11Z","updated_at":"2026-09-06T18:20:11Z","closed_at":null}
+{
+    "number": 12,
+    "id": 2451900001,
+    "title": "Rate limiter drops the Retry-After header",
+    "body": "Reproduced on main at 0f21ac9.",
+    "state": "open",
+    "state_reason": null,
+    "labels": [{"name": "bug", "color": "d73a4a", "description": "Something isn't working"}],
+    "user": {"login": "mikechau1", "id": 583920, "type": "User", "...": "..."},
+    "assignees": [],
+    "comments": 0,
+    "locked": false,
+    "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/issues/12",
+    "created_at": "2026-09-06T18:20:11Z",
+    "updated_at": "2026-09-06T18:20:11Z",
+    "closed_at": null
+}
 ```
 
-HTTPie:
+Title only:
 
 ```bash
-http POST :8000/issues title="Something is broken" body="Details here" labels:='["bug"]'
+http POST :8000/issues title="Something is broken"
 ```
 
-Invalid payload → `400` (not 422; the contract specifies 400):
+Invalid payload → `400` (not FastAPI's default 422; the contract specifies 400):
 
 ```bash
-curl -s -X POST http://localhost:8000/issues \
-  -H 'Content-Type: application/json' -d '{}' | jq
+http POST :8000/issues body="no title supplied"
 ```
 
 ```json
@@ -207,8 +231,10 @@ curl -s -X POST http://localhost:8000/issues \
 ### 2. `GET /issues` — list
 
 ```bash
-curl -i 'http://localhost:8000/issues?state=open&labels=bug&page=1&per_page=5'
+http GET :8000/issues state==open labels==bug page==1 per_page==5
 ```
+
+Add `--print=hb` (or `-v` for the request too) to see the pagination headers:
 
 ```http
 HTTP/1.1 200 OK
@@ -225,28 +251,28 @@ Query parameters: `state` (`open`|`closed`|`all`, default `open`), `labels`
 (comma-separated), `page` (≥1), `per_page` (1–100, default 30), `sort`
 (`created`|`updated`|`comments`), `direction` (`asc`|`desc`).
 
-The `Link` header is GitHub's pagination, **rewritten to point at this
-service** and carrying your filters forward, so you can follow `rel="next"`
-directly. Pull requests are filtered out — GitHub serves them from the same
-endpoint, but this is an issues API.
+The `Link` header is GitHub's pagination **rewritten to point at this service**
+and carrying your filters forward, so you can follow `rel="next"` directly.
+Only parameters this API accepts survive the rewrite. Pull requests are
+filtered out — GitHub serves them from the same endpoint, but this is an issues
+API.
 
 **Conditional GET (extra credit).** Send the `ETag` back and get a `304` that
 costs no GitHub rate-limit budget:
 
 ```bash
-ETAG=$(curl -sD - -o /dev/null 'http://localhost:8000/issues?per_page=5' \
-        | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')
+ETAG=$(http --print=h GET :8000/issues per_page==5 \
+       | awk 'tolower($1)=="etag:"{print $2}' | tr -d '\r')
 
-curl -s -o /dev/null -w '%{http_code}\n' \
-  -H "If-None-Match: $ETAG" 'http://localhost:8000/issues?per_page=5'
-# 304
+http --print=h GET :8000/issues per_page==5 "If-None-Match:${ETAG}"
+# HTTP/1.1 304 Not Modified
 ```
 
 ### 3. `GET /issues/{number}` — read one
 
 ```bash
-curl -s http://localhost:8000/issues/12 | jq '{number, title, state, comments}'
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/issues/99999999   # 404
+http GET :8000/issues/12
+http GET :8000/issues/99999999      # 404
 ```
 
 ### 4. `PATCH /issues/{number}` — update, close, reopen
@@ -256,20 +282,19 @@ fields you did not mention.
 
 ```bash
 # rename
-curl -s -X PATCH http://localhost:8000/issues/12 \
-  -H 'Content-Type: application/json' -d '{"title":"Rate limiter drops Retry-After (confirmed)"}'
+http PATCH :8000/issues/12 title="Rate limiter drops Retry-After (confirmed)"
 
 # edit the body
-curl -s -X PATCH http://localhost:8000/issues/12 \
-  -H 'Content-Type: application/json' -d '{"body":"Updated repro steps."}'
+http PATCH :8000/issues/12 body="Updated repro steps."
 
 # close -- this API's DELETE
-curl -s -X PATCH http://localhost:8000/issues/12 \
-  -H 'Content-Type: application/json' -d '{"state":"closed","state_reason":"completed"}'
+http PATCH :8000/issues/12 state=closed state_reason=completed
 
 # reopen
-curl -s -X PATCH http://localhost:8000/issues/12 \
-  -H 'Content-Type: application/json' -d '{"state":"open"}'
+http PATCH :8000/issues/12 state=open
+
+# rejected: not a valid state
+http PATCH :8000/issues/12 state=deleted     # 400
 ```
 
 > **On "delete".** GitHub's REST API has no delete-issue operation, so the
@@ -280,26 +305,28 @@ curl -s -X PATCH http://localhost:8000/issues/12 \
 ### 5. `POST /issues/{number}/comments` — comment
 
 ```bash
-curl -i -X POST http://localhost:8000/issues/12/comments \
-  -H 'Content-Type: application/json' \
-  -d '{"body":"Confirmed on staging -- see the attached trace."}'
+http POST :8000/issues/12/comments body="Confirmed on staging -- see the attached trace."
 ```
 
 ```http
 HTTP/1.1 201 Created
 Location: /issues/12/comments
 
-{"id":3310028841,"body":"Confirmed on staging -- see the attached trace.",
- "user":{"login":"mikechau1","id":583920,"type":"User","...":"..."},
- "html_url":"https://github.com/mikechau1/cmpe272-issues-gw/issues/12#issuecomment-3310028841",
- "issue_url":"https://api.github.com/repos/mikechau1/cmpe272-issues-gw/issues/12",
- "created_at":"2026-09-06T19:02:44Z","updated_at":"2026-09-06T19:02:44Z"}
+{
+    "id": 3310028841,
+    "body": "Confirmed on staging -- see the attached trace.",
+    "user": {"login": "mikechau1", "id": 583920, "type": "User", "...": "..."},
+    "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/issues/12#issuecomment-3310028841",
+    "issue_url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/issues/12",
+    "created_at": "2026-09-06T19:02:44Z",
+    "updated_at": "2026-09-06T19:02:44Z"
+}
 ```
 
 ### 6. `GET /issues/{number}/comments` — list comments
 
 ```bash
-curl -s 'http://localhost:8000/issues/12/comments?per_page=30&page=1' | jq '.[].body'
+http GET :8000/issues/12/comments per_page==30 page==1
 ```
 
 Paginated the same way as `GET /issues`.
@@ -309,17 +336,20 @@ Paginated the same way as `GET /issues`.
 Verifies `X-Hub-Signature-256`, persists the delivery, acks `204`, and
 interprets it in the background. See [Webhook setup](#webhook-setup).
 
+To hand-roll a delivery, sign the exact bytes you are about to send — GitHub
+signs the raw body, so the digest and the transmitted payload must not differ
+by even a newline. `printf '%s'` (no trailing newline) piped into HTTPie sends
+stdin verbatim:
+
 ```bash
-# hand-rolled delivery, signed correctly
 BODY='{"action":"opened","issue":{"number":12,"title":"hi"},"sender":{"login":"me"}}'
 SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | awk '{print $NF}')"
 
-curl -i -X POST http://localhost:8000/webhook \
-  -H 'Content-Type: application/json' \
-  -H 'X-GitHub-Event: issues' \
-  -H "X-GitHub-Delivery: $(uuidgen)" \
-  -H "X-Hub-Signature-256: $SIG" \
-  -d "$BODY"
+printf '%s' "$BODY" | http POST :8000/webhook \
+  Content-Type:application/json \
+  X-GitHub-Event:issues \
+  X-GitHub-Delivery:"$(uuidgen)" \
+  X-Hub-Signature-256:"$SIG"
 # HTTP/1.1 204 No Content
 ```
 
@@ -332,8 +362,8 @@ curl -i -X POST http://localhost:8000/webhook \
 | Body over `MAX_WEBHOOK_BODY_BYTES` | `413` |
 | `WEBHOOK_SECRET` unset | `503 not_configured` |
 
-`scripts/webhook_replay.sh` does all of this for you, including the tampered
-case and a duplicate-delivery check:
+`scripts/webhook_replay.sh` replays a captured payload for you, including the
+tampered case and a duplicate-delivery check:
 
 ```bash
 ./scripts/webhook_replay.sh                                        # 204, then 204 with no new row
@@ -344,8 +374,8 @@ case and a duplicate-delivery check:
 ### 8. `GET /events` — recent deliveries
 
 ```bash
-curl -s 'http://localhost:8000/events?limit=10' | jq
-curl -s 'http://localhost:8000/events?event=issue_comment' | jq
+http GET :8000/events limit==10
+http GET :8000/events event==issue_comment
 ```
 
 ```json
@@ -373,8 +403,8 @@ which case `error` holds the reason.
 ### 9. `GET /healthz` and `GET /readyz`
 
 ```bash
-curl -s http://localhost:8000/healthz | jq          # liveness; never calls GitHub
-curl -s 'http://localhost:8000/readyz?deep=true' | jq   # also verifies the token + repo
+http GET :8000/healthz             # liveness; never calls GitHub
+http GET :8000/readyz deep==true   # also verifies the token can see the repo
 ```
 
 `/healthz` is deliberately independent of GitHub, so an upstream outage or an
@@ -412,49 +442,70 @@ field in the logs, so a user-reported failure is one `grep` away.
 | 503 | `not_configured` | A required environment variable is unset |
 | 504 | `github_timeout` | Upstream exceeded `GITHUB_TIMEOUT_S` |
 
-### Postman / Bruno
+### Useful HTTPie flags
 
-Import [`postman/issues-gateway.postman_collection.json`](postman/issues-gateway.postman_collection.json).
-Set `baseUrl` and `webhookSecret` (it must match your `.env`), then run
-**Create issue** first — it captures `issueNumber` for the later requests. The
-webhook requests compute a real HMAC in a pre-request script, so the valid and
-tampered cases genuinely return 204 and 401.
+| Flag | Why |
+| --- | --- |
+| `-v` / `--verbose` | Print the request as well as the response |
+| `--print=h` | Response headers only — how to see `Link`, `ETag`, `X-Page` |
+| `--print=hb` | Headers and body |
+| `--check-status` | Exit non-zero on 4xx/5xx, for use in scripts |
+| `--offline` | Build and print the request without sending it |
+| `--ignore-stdin` | Required in scripts and pipelines, so HTTPie does not wait on stdin |
+| `--pretty=format` | Keep JSON indented even when piping to another command |
 
 ---
 
 ## Webhook setup
 
-You need a public URL that reaches your local service. Three options:
+GitHub needs a public HTTPS URL to deliver to. This project uses **ngrok**.
 
-### Option A — Cloudflare tunnel via docker compose (no account needed)
+### 1. Install and authenticate ngrok
 
 ```bash
-docker compose --profile tunnel up --build
-docker compose logs tunnel | grep -o 'https://.*trycloudflare.com'
+brew install ngrok                      # or https://ngrok.com/download
+ngrok config add-authtoken <YOUR_TOKEN> # free account, one time
 ```
 
-### Option B — ngrok
+The authtoken is at
+<https://dashboard.ngrok.com/get-started/your-authtoken>.
+
+### 2. Start the service, then the tunnel
 
 ```bash
-./scripts/run.sh          # terminal 1
-ngrok http 8000           # terminal 2 -> copy the https:// forwarding URL
+./scripts/run.sh        # terminal 1 -- gateway on :8000
+ngrok http 8000         # terminal 2  (or: make tunnel)
 ```
 
-### Option C — smee.io (no tunnel binary)
+ngrok prints a forwarding URL. Copy the `https://` one:
 
-```bash
-npx smee-client --url https://smee.io/YOUR-CHANNEL --target http://localhost:8000/webhook
+```
+Forwarding   https://a1b2-c3d4-e5f6.ngrok-free.app -> http://localhost:8000
 ```
 
-### Then register the webhook
+Prefer containers? `docker compose --profile tunnel up --build` runs both,
+reading `NGROK_AUTHTOKEN` from `.env`. Get the URL from the local API:
 
 ```bash
+http --ignore-stdin GET :4040/api/tunnels | \
+  python3 -c "import json,sys; print(json.load(sys.stdin)['tunnels'][0]['public_url'])"
+```
+
+> On the free plan the URL changes every time ngrok restarts, and the webhook
+> config has to be updated to match. A reserved domain (`ngrok http
+> --url=your-domain.ngrok-free.app 8000`) avoids that.
+
+### 3. Register the webhook
+
+```bash
+NGROK_URL=https://a1b2-c3d4-e5f6.ngrok-free.app
+
 gh api -X POST "repos/$GITHUB_OWNER/$GITHUB_REPO/hooks" \
   -f name=web \
   -F active=true \
   -f 'events[]=issues' \
   -f 'events[]=issue_comment' \
-  -f config[url]="https://YOUR-PUBLIC-URL/webhook" \
+  -f config[url]="${NGROK_URL}/webhook" \
   -f config[content_type]=json \
   -f config[secret]="$WEBHOOK_SECRET" \
   -f config[insecure_ssl]=0
@@ -462,43 +513,64 @@ gh api -X POST "repos/$GITHUB_OWNER/$GITHUB_REPO/hooks" \
 
 Or in the UI: **Repository → Settings → Webhooks → Add webhook**
 
-- **Payload URL:** `https://YOUR-PUBLIC-URL/webhook`
+- **Payload URL:** `https://YOUR-NGROK-URL/webhook`
 - **Content type:** `application/json`
 - **Secret:** the exact value of `WEBHOOK_SECRET` — this is the one that trips
-  people up; a mismatch shows up as a `401 invalid_signature`
+  people up; a mismatch shows up as `401 invalid_signature`
 - **Events:** *Let me select individual events* → **Issues** and
   **Issue comments**
 
 GitHub immediately sends a `ping`, which should appear in `/events`.
 
-### Verify it end to end
+### 4. Verify it end to end
 
 ```bash
-curl -s -X POST http://localhost:8000/issues \
-  -H 'Content-Type: application/json' -d '{"title":"webhook check"}' | jq .number
+http POST :8000/issues title="webhook check"
 
 sleep 3
-curl -s 'http://localhost:8000/events?limit=5' | jq '.[] | {event, action, issue_number, status}'
+http GET :8000/events limit==5
 ```
 
-### Redelivering
+You should see an `issues` / `opened` row with `status: processed`.
 
-**Settings → Webhooks → your hook → Recent Deliveries** shows every attempt
+**ngrok's inspector is the best debugging tool here.** <http://localhost:4040>
+shows every delivery GitHub sent, with full request and response bodies — so
+you can see the exact payload, the signature header, and what the gateway
+answered. It also has a **Replay** button, which re-sends a delivery with the
+same headers: a one-click way to watch the idempotency logic absorb a
+duplicate. Replay any delivery and confirm `/events` does not grow.
+
+### 5. Redelivering from GitHub
+
+**Settings → Webhooks → your hook → Recent Deliveries** lists every attempt
 with its full request and response. Pick one and click **Redeliver**.
 
 The response stays `204` and `/events` does **not** grow a second row: the
 dedupe key is `(X-GitHub-Delivery, event, action)`, so a replay is recognised
 and ignored. That is the property to demo — redeliver the same event twice and
-show that `/events` is unchanged.
+show `/events` unchanged.
 
 ```bash
-gh api "repos/$GITHUB_OWNER/$GITHUB_REPO/hooks/HOOK_ID/deliveries"                    # list
-gh api -X POST "repos/$GITHUB_OWNER/$GITHUB_REPO/hooks/HOOK_ID/deliveries/ID/attempts" # redeliver
+HOOK_ID=$(gh api "repos/$GITHUB_OWNER/$GITHUB_REPO/hooks" -q '.[0].id')
+gh api "repos/$GITHUB_OWNER/$GITHUB_REPO/hooks/$HOOK_ID/deliveries"
+gh api -X POST "repos/$GITHUB_OWNER/$GITHUB_REPO/hooks/$HOOK_ID/deliveries/ID/attempts"
 ```
+
+### 6. Run the end-to-end webhook tests
+
+With the tunnel up and the webhook registered:
+
+```bash
+RUN_TUNNEL_TESTS=1 make test-tunnel
+```
+
+These create real issues and comments, then poll `/events` until the matching
+delivery arrives.
 
 > **After the demo, rotate the secret.** Generate a new one
 > (`openssl rand -hex 32`), update both `.env` and the webhook config, and
-> restart. Tunnel URLs are public while they live.
+> restart. ngrok URLs are public while they live, and the free-plan URL is
+> guessable enough to be worth not leaving pointed at a stale secret.
 
 ---
 
@@ -608,9 +680,11 @@ runtime layer), runs as uid 10001, and declares a `HEALTHCHECK` that hits
 `/healthz` without reaching GitHub. `/data` is a volume so the webhook event
 store — and therefore dedupe — survives a restart.
 
-`docker-compose.yaml` adds an optional Cloudflare tunnel under the `tunnel`
-profile. A [devcontainer](.devcontainer/devcontainer.json) is included for
-VS Code / GitHub Codespaces.
+`docker-compose.yaml` adds an optional ngrok tunnel under the `tunnel` profile
+(`docker compose --profile tunnel up`), which needs `NGROK_AUTHTOKEN` in
+`.env` and exposes ngrok's inspector on <http://localhost:4040>. A
+[devcontainer](.devcontainer/devcontainer.json) is included for VS Code /
+GitHub Codespaces.
 
 ---
 
@@ -685,11 +759,10 @@ The short version of the decisions — the full reasoning is in
 │   ├── conftest.py, fixtures/       # captured GitHub payloads
 │   ├── unit/                        # 9 files, no network
 │   └── integration/                 # live, resilience, tunnel
-├── scripts/
-│   ├── run.sh                       # one-click local or docker run
-│   ├── smoke.sh                     # exercise every route
-│   └── webhook_replay.sh            # signed replay, tamper check, dedupe check
-└── postman/issues-gateway.postman_collection.json
+└── scripts/
+    ├── run.sh                       # one-click local or docker run
+    ├── httpie_examples.sh           # every route in HTTPie, 26 asserted checks
+    └── webhook_replay.sh            # signed replay, tamper check, dedupe check
 ```
 
 ---
@@ -708,9 +781,11 @@ test-tunnel        Run the end-to-end webhook tests
 cov                Coverage report
 lint / fmt         ruff check / ruff format
 spec               Validate openapi.yaml as OpenAPI 3.1
+examples           Exercise every route with HTTPie against a running service
+tunnel             Expose the local service to GitHub with ngrok
 docker-build       Build the container image
 docker-run         Run the container image with .env
 compose-up         Start with docker compose
-compose-tunnel     Start with a public Cloudflare tunnel
+compose-tunnel     Start with docker compose plus ngrok
 clean              Remove build, test and cache artefacts
 ```

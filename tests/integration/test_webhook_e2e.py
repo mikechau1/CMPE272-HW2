@@ -1,16 +1,22 @@
-"""Real webhook deliveries, end to end through a public tunnel.
+"""Real webhook deliveries, end to end through an ngrok tunnel.
 
 This is the only test that exercises the path GitHub actually uses: GitHub
-signs a delivery, ships it over the internet to a tunnel, the tunnel forwards
-it to a *running* gateway process, and the event shows up on `GET /events`.
+signs a delivery, ships it over the internet to ngrok, ngrok forwards it to a
+*running* gateway process, and the event shows up on `GET /events`.
 
 It needs setup a test runner cannot do for itself (a tunnel, a webhook
 configured on the repo), so it is opt-in:
 
-    RUN_TUNNEL_TESTS=1 SERVICE_URL=http://localhost:8000 pytest -m tunnel
+    ngrok http 8000                 # terminal 1, then register the webhook
+    RUN_TUNNEL_TESTS=1 pytest -m tunnel
 
-See the "Webhook setup" section of README.md.  `scripts/webhook_replay.sh`
-covers the same assertions without a tunnel by replaying a signed payload.
+See the "Webhook setup" section of README.md.  `scripts/webhook_replay.sh` and
+`scripts/httpie_examples.sh` cover the same assertions without a tunnel by
+replaying a correctly signed payload.
+
+While these run, ngrok's inspector at http://localhost:4040 shows every
+delivery GitHub sent and what the gateway answered -- the fastest way to
+diagnose a failure here, which is almost always a WEBHOOK_SECRET mismatch.
 """
 
 from __future__ import annotations
@@ -31,7 +37,10 @@ POLL_INTERVAL_S = 1.5
 @pytest.fixture(scope="module")
 def tunnel_enabled() -> None:
     if os.environ.get("RUN_TUNNEL_TESTS") != "1":
-        pytest.skip("set RUN_TUNNEL_TESTS=1 with a tunnel and webhook configured")
+        pytest.skip(
+            "set RUN_TUNNEL_TESTS=1 with ngrok running and the repository "
+            "webhook pointed at it (see README, 'Webhook setup')"
+        )
 
 
 @pytest.fixture(scope="module")

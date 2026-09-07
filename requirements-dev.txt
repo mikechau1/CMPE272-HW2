@@ -6,3 +6,8 @@ pytest-cov>=5.0
 respx>=0.21,<1.0
 ruff>=0.6
 openapi-spec-validator>=0.7
+
+# API examples and the smoke script are written in HTTPie; installing it here
+# means `make install` provides .venv/bin/http with no system-wide install.
+httpie>=3.2
+

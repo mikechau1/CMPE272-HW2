@@ -1,8 +1,8 @@
-# Local stack: the gateway, plus an optional Cloudflare tunnel that gives
-# GitHub a public URL to deliver webhooks to.
+# Local stack: the gateway, plus an optional ngrok tunnel that gives GitHub a
+# public HTTPS URL to deliver webhooks to.
 #
 #   docker compose up --build              # gateway only
-#   docker compose --profile tunnel up     # gateway + public tunnel
+#   docker compose --profile tunnel up     # gateway + ngrok
 #
 # Secrets come from .env (git-ignored). Nothing is baked into the image.
 
@@ -38,17 +38,29 @@ services:
       start_period: 5s
 
   # Public HTTPS URL for GitHub to deliver webhooks to, without opening a port
-  # on your machine. The URL is printed in this container's logs on startup.
+  # on your machine. Requires a free ngrok account:
   #
-  #   docker compose --profile tunnel up
-  #   docker compose logs tunnel | grep trycloudflare
+  #   1. Get an authtoken at https://dashboard.ngrok.com/get-started/your-authtoken
+  #   2. Put it in .env as NGROK_AUTHTOKEN=...
+  #   3. docker compose --profile tunnel up --build
+  #   4. Read the public URL from the local inspector:
+  #        curl -s http://localhost:4040/api/tunnels | python3 -c \
+  #          "import json,sys; print(json.load(sys.stdin)['tunnels'][0]['public_url'])"
   #
   # Paste that URL + /webhook into the repository's webhook settings.
+  # If you would rather run ngrok on the host, skip this profile and use
+  #   ngrok http ${PORT:-8000}
   tunnel:
-    image: cloudflare/cloudflared:latest
-    container_name: issues-gateway-tunnel
+    image: ngrok/ngrok:latest
+    container_name: issues-gateway-ngrok
     profiles: ["tunnel"]
-    command: tunnel --no-autoupdate --url http://gateway:8000
+    command: http gateway:8000 --log stdout
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?set NGROK_AUTHTOKEN in .env to use the tunnel profile}
+    ports:
+      # ngrok's local inspector: http://localhost:4040 shows every delivery,
+      # including the ones GitHub sends, with full request and response bodies.
+      - "4040:4040"
     depends_on:
       gateway:
         condition: service_healthy
