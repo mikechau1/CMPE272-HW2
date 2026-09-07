@@ -35,8 +35,8 @@ for one repository and ingests that repository's **webhooks**.
 ## Quick start
 
 ```bash
-git clone https://github.com/mikechau1/cmpe272-issues-gw.git
-cd cmpe272-issues-gw
+git clone https://github.com/mikechau1/CMPE272-HW2.git
+cd CMPE272-HW2
 
 cp .env.example .env
 $EDITOR .env          # set GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, WEBHOOK_SECRET
@@ -102,11 +102,23 @@ need them answer `401`/`503` with a message naming the variable.
 
 ## Creating the token and the repo
 
+> **Two repositories are in play, on purpose.**
+>
+> | Repository | Role |
+> | --- | --- |
+> | [`mikechau1/CMPE272-HW2`](https://github.com/mikechau1/CMPE272-HW2) | This source tree — the submission |
+> | [`mikechau1/cmpe272-issues-gw`](https://github.com/mikechau1/cmpe272-issues-gw) | The repository the gateway *operates on*: `GITHUB_OWNER`/`GITHUB_REPO`, where issues get created and webhooks are registered |
+>
+> They are separate because the integration tests create and close real issues
+> and the webhook fires on every one of them. Keeping that out of the
+> submission repo means the graded history stays readable. Nothing stops you
+> pointing `GITHUB_REPO` at a single repo instead — the service does not care.
+
 ### 1. A dedicated test repository
 
 ```bash
 gh repo create cmpe272-issues-gw --private \
-  --description "CMPE 272 HW2 - HTTP gateway over the GitHub Issues REST API"
+  --description "CMPE 272 HW2 - issues + webhook target for the gateway"
 ```
 
 Any repository works as long as Issues are enabled. Use a throwaway one: the

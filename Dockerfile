@@ -24,7 +24,7 @@ FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="issues-gateway" \
       org.opencontainers.image.description="HTTP gateway over the GitHub Issues REST API" \
-      org.opencontainers.image.source="https://github.com/mikechau1/cmpe272-issues-gw"
+      org.opencontainers.image.source="https://github.com/mikechau1/CMPE272-HW2"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
