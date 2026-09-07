@@ -21,6 +21,7 @@ delivery *was* accepted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Annotated, Any
 
@@ -201,8 +202,6 @@ async def receive_webhook(
     # hand-rolled curl replay still dedupes deterministically.
     delivery_id = (request.headers.get(DELIVERY_HEADER) or "").strip()[:128]
     if not delivery_id:
-        import hashlib
-
         delivery_id = f"sha256:{hashlib.sha256(body).hexdigest()[:32]}"
 
     # --- 3. persist (durable + idempotent) ----------------------------------

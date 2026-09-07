@@ -551,8 +551,25 @@ pytest -m integration
 ### Current results
 
 ```
-320 passed   (304 credential-free + 16 live)
+322 passed   (306 credential-free + 16 live)
 coverage: 96% of app/  (target: 80%)
+```
+
+Unit tests are hermetic — they construct `Settings(_env_file=None)`, so the
+suite behaves identically with and without a local `.env`.
+
+### CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs lint, OpenAPI
+validation, the credential-free suite on Python 3.11/3.12/3.13, a Docker build
+that boots the image and probes it, and the live integration tests.
+
+The live job is opt-in: it needs a repository secret named `GH_ISSUES_TOKEN`
+(a fine-grained PAT with `Issues: Read and write`). Without it the job logs a
+notice and passes, so CI stays green on a fork.
+
+```bash
+gh secret set GH_ISSUES_TOKEN --repo "$GITHUB_OWNER/$GITHUB_REPO"
 ```
 
 ---
