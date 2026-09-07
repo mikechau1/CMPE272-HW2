@@ -1,0 +1,146 @@
+[
+  {
+    "name": "01-overview",
+    "file": "01-overview.png",
+    "caption": "The service serves its hand-written openapi.yaml at /docs, so this page is the contract itself, not a description generated from the code. The server dropdown lists both spellings of localhost, because Try it out sends requests to the selected server URL.",
+    "status": "",
+    "width": 2920,
+    "height": 1110
+  },
+  {
+    "name": "01b-operations",
+    "file": "01b-operations.png",
+    "caption": "Ten operations in three groups. There is deliberately no DELETE: GitHub's REST API has no delete-issue endpoint, so removal is PATCH /issues/{number} with state=closed.",
+    "status": "",
+    "width": 2840,
+    "height": 1566
+  },
+  {
+    "name": "02-security-schemes",
+    "file": "02-security-schemes.png",
+    "caption": "The two credentials the contract declares. githubToken is the server-side PAT the gateway uses to call GitHub; webhookSignature is the HMAC header GitHub sends. Neither is ever accepted from a client of this API.",
+    "status": "",
+    "width": 1300,
+    "height": 1180
+  },
+  {
+    "name": "03-create-request",
+    "file": "03-create-request.png",
+    "caption": "POST /issues, filled in through Try it out. The editor is pre-populated from the contract's CreateIssueRequest schema, which is why the field names and types are already correct.",
+    "status": "",
+    "width": 2836,
+    "height": 1036
+  },
+  {
+    "name": "04-create-response",
+    "file": "04-create-response.png",
+    "caption": "201 Created. The Location header points at /issues/79 on this service, and X-RateLimit-Remaining is GitHub's own budget passed through so a caller can pace itself.",
+    "status": "201",
+    "width": 2836,
+    "height": 2836
+  },
+  {
+    "name": "05-validation-400",
+    "file": "05-validation-400.png",
+    "caption": "The same endpoint with the title omitted: 400, not FastAPI's default 422, because the contract specifies 400. The details array names the offending field, and no GitHub call was made -- invalid input costs no rate-limit budget.",
+    "status": "400",
+    "width": 2836,
+    "height": 2400
+  },
+  {
+    "name": "06-list-issues",
+    "file": "06-list-issues.png",
+    "caption": "GET /issues with per_page=3. In the response headers: Link, rewritten to point back at this service instead of api.github.com; ETag, for conditional GET; and X-Page / X-Per-Page echoing what was applied.",
+    "status": "200",
+    "width": 2836,
+    "height": 3032
+  },
+  {
+    "name": "07-get-issue",
+    "file": "07-get-issue.png",
+    "caption": "GET /issues/79 returns the issue just created, projected onto the fields the contract documents rather than GitHub's raw payload.",
+    "status": "200",
+    "width": 2836,
+    "height": 1892
+  },
+  {
+    "name": "08-close-issue",
+    "file": "08-close-issue.png",
+    "caption": "PATCH with {\"state\": \"closed\"} -- the D in CRUD. GitHub has no delete-issue endpoint, so closing is how this API deletes. Note closed_at is now set.",
+    "status": "200",
+    "width": 2836,
+    "height": 2984
+  },
+  {
+    "name": "09-reopen-issue",
+    "file": "09-reopen-issue.png",
+    "caption": "Reopening the same issue. closed_at is back to null, which is how you can tell the close really was reversible -- the reason modelling delete as close is honest rather than a workaround.",
+    "status": "200",
+    "width": 2836,
+    "height": 2952
+  },
+  {
+    "name": "10-create-comment",
+    "file": "10-create-comment.png",
+    "caption": "201 Created for a comment, with a Location header pointing at the issue's comment collection.",
+    "status": "201",
+    "width": 2836,
+    "height": 2656
+  },
+  {
+    "name": "11-list-comments",
+    "file": "11-list-comments.png",
+    "caption": "The comment read back from GitHub, confirming the write landed and is visible through the same gateway that created it.",
+    "status": "200",
+    "width": 2836,
+    "height": 2096
+  },
+  {
+    "name": "12-webhook-valid",
+    "file": "12-webhook-valid.png",
+    "caption": "A correctly signed delivery: 204 No Content, no body. The gateway verified the HMAC, stored the delivery, and acked before doing any interpretation -- GitHub gives a receiver ten seconds.",
+    "status": "204",
+    "width": 2836,
+    "height": 2470
+  },
+  {
+    "name": "13-webhook-tampered",
+    "file": "13-webhook-tampered.png",
+    "caption": "The same signature against a body with one word changed: 401. This is the check that separates a webhook receiver from an open write endpoint. The comparison is constant-time, and the signature is never echoed back or logged.",
+    "status": "401",
+    "width": 2836,
+    "height": 2900
+  },
+  {
+    "name": "14-events",
+    "file": "14-events.png",
+    "caption": "GET /events shows the accepted delivery with status 'processed'. The tampered one is absent: it never got past the signature check, so it was never stored.",
+    "status": "200",
+    "width": 2836,
+    "height": 1960
+  },
+  {
+    "name": "15-healthz",
+    "file": "15-healthz.png",
+    "caption": "/healthz reports process health and configuration completeness without calling GitHub, so an upstream outage or an exhausted rate limit cannot make an orchestrator kill a healthy container.",
+    "status": "200",
+    "width": 2836,
+    "height": 1240
+  },
+  {
+    "name": "16-schemas",
+    "file": "16-schemas.png",
+    "caption": "The reusable components/schemas the contract defines: Issue, Comment, Error and the request models. Every response in the document above is an instance of one of these.",
+    "status": "",
+    "width": 2840,
+    "height": 1584
+  },
+  {
+    "name": "17-redoc",
+    "file": "17-redoc.png",
+    "caption": "The same openapi.yaml rendered by ReDoc at /redoc. Two renderers, one contract, no second source of truth to drift.",
+    "status": "",
+    "width": 3000,
+    "height": 2100
+  }
+]

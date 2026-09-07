@@ -53,6 +53,17 @@ servers:
       port:
         default: "8000"
         description: The value of the PORT environment variable.
+  # Same service, spelled the other way. Swagger UI's "Try it out" sends
+  # requests to the selected server URL, so loading /docs on 127.0.0.1 while
+  # only `localhost` is declared makes every call a cross-origin fetch that the
+  # browser blocks ("Failed to fetch"). Declaring both lets the reader pick the
+  # one matching their address bar; the service sets no CORS headers by design.
+  - url: http://127.0.0.1:{port}
+    description: Local development (loopback address)
+    variables:
+      port:
+        default: "8000"
+        description: The value of the PORT environment variable.
 
 tags:
   - name: issues

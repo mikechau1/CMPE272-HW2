@@ -11,7 +11,7 @@ PORT    ?= 8000
 IMAGE   ?= issues-gateway:local
 
 .PHONY: help install run dev test test-unit test-integration test-tunnel cov lint fmt \
-        spec examples tunnel docker-build docker-run compose-up compose-tunnel clean env
+        spec examples ui-doc tunnel docker-build docker-run compose-up compose-tunnel clean env
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -55,12 +55,12 @@ cov: install ## Run the credential-free suite with a coverage report
 	@echo "HTML report: htmlcov/index.html"
 
 lint: install ## Lint
-	$(RUFF) check app tests
-	$(RUFF) format --check app tests
+	$(RUFF) check app tests docs
+	$(RUFF) format --check app tests docs
 
 fmt: install ## Auto-format and auto-fix
-	$(RUFF) format app tests
-	$(RUFF) check --fix app tests
+	$(RUFF) format app tests docs
+	$(RUFF) check --fix app tests docs
 
 spec: install ## Validate openapi.yaml as OpenAPI 3.1
 	$(PY) -c "from openapi_spec_validator import validate; \
@@ -70,6 +70,11 @@ print('openapi.yaml is valid OpenAPI', spec['openapi'])"
 
 examples: install ## Exercise every route with HTTPie against a running service
 	./scripts/httpie_examples.sh
+
+ui-doc: install ## Rebuild docs/UI-Walkthrough.docx (service must be running)
+	$(PIP) install --quiet -r docs/requirements.txt
+	$(PY) docs/capture_ui.py
+	$(PY) docs/build_walkthrough.py
 
 tunnel: ## Expose the local service to GitHub with ngrok
 	@command -v ngrok >/dev/null 2>&1 || { \

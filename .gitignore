@@ -21,6 +21,9 @@ coverage.xml
 htmlcov/
 .ruff_cache/
 
+# --- doc generation scratch ---
+docs/screenshots/.parts/
+
 # --- runtime data -----------------------------------------------------------
 data/
 *.db

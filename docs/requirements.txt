@@ -1,0 +1,12 @@
+# Tooling for regenerating docs/UI-Walkthrough.docx. Not needed to run, test,
+# or deploy the service -- keep these out of requirements.txt.
+#
+#   pip install -r docs/requirements.txt
+#
+# Playwright drives the system Google Chrome (channel="chrome"), so there is no
+# browser download step. If Chrome is not installed, run `playwright install
+# chromium` and drop the channel argument in capture_ui.py.
+
+playwright>=1.44
+python-docx>=1.1
+Pillow>=10.0

@@ -63,6 +63,14 @@ To exercise every route against your real repository in one go, with HTTPie:
 make examples          # or: ./scripts/httpie_examples.sh
 ```
 
+**Prefer to read rather than run?** [`docs/UI-Walkthrough.docx`](docs/UI-Walkthrough.docx)
+is a screenshot walkthrough of the same interactions performed through the
+Swagger UI at `/docs` — create, list, read, close, reopen, comment, a rejected
+payload, a signed webhook delivery and a tampered one. Every screenshot is a
+live call against the real GitHub API; the HTTP status in its summary table
+was read off the page during capture. Regenerate it with `make ui-doc` while
+the service is running.
+
 ---
 
 ## Configuration
@@ -771,10 +779,16 @@ The short version of the decisions — the full reasoning is in
 │   ├── conftest.py, fixtures/       # captured GitHub payloads
 │   ├── unit/                        # 9 files, no network
 │   └── integration/                 # live, resilience, tunnel
-└── scripts/
-    ├── run.sh                       # one-click local or docker run
-    ├── httpie_examples.sh           # every route in HTTPie, 26 asserted checks
-    └── webhook_replay.sh            # signed replay, tamper check, dedupe check
+├── scripts/
+│   ├── run.sh                       # one-click local or docker run
+│   ├── httpie_examples.sh           # every route in HTTPie, 26 asserted checks
+│   └── webhook_replay.sh            # signed replay, tamper check, dedupe check
+└── docs/
+    ├── UI-Walkthrough.docx          # screenshot walkthrough of the live UI
+    ├── screenshots/                 # the 18 source images + manifest
+    ├── capture_ui.py                # drives Swagger UI in headless Chrome
+    ├── build_walkthrough.py         # assembles the .docx
+    └── requirements.txt             # playwright, python-docx (doc tooling only)
 ```
 
 ---
@@ -794,6 +808,7 @@ cov                Coverage report
 lint / fmt         ruff check / ruff format
 spec               Validate openapi.yaml as OpenAPI 3.1
 examples           Exercise every route with HTTPie against a running service
+ui-doc             Rebuild docs/UI-Walkthrough.docx from live screenshots
 tunnel             Expose the local service to GitHub with ngrok
 docker-build       Build the container image
 docker-run         Run the container image with .env
