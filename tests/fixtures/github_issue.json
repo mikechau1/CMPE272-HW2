@@ -1,0 +1,55 @@
+{
+  "id": 2451900001,
+  "node_id": "I_kwDOMv7Uzs6XyZ2B",
+  "url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/issues/12",
+  "repository_url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw",
+  "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/issues/12",
+  "number": 12,
+  "state": "open",
+  "state_reason": null,
+  "title": "Rate limiter drops the Retry-After header",
+  "body": "Reproduced on main at 0f21ac9.",
+  "user": {
+    "login": "mikechau1",
+    "id": 583920,
+    "node_id": "MDQ6VXNlcjU4MzkyMA==",
+    "avatar_url": "https://avatars.githubusercontent.com/u/583920?v=4",
+    "html_url": "https://github.com/mikechau1",
+    "type": "User",
+    "site_admin": false
+  },
+  "labels": [
+    {
+      "id": 7712345678,
+      "node_id": "LA_kwDOMv7Uzs8AAAABzKq3Tg",
+      "url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/labels/bug",
+      "name": "bug",
+      "color": "d73a4a",
+      "default": true,
+      "description": "Something isn't working"
+    },
+    {
+      "id": 7712345679,
+      "name": "gateway",
+      "color": "0e8a16",
+      "default": false,
+      "description": null
+    }
+  ],
+  "assignee": null,
+  "assignees": [],
+  "milestone": null,
+  "locked": false,
+  "active_lock_reason": null,
+  "comments": 2,
+  "closed_at": null,
+  "created_at": "2026-09-06T18:20:11Z",
+  "updated_at": "2026-09-06T19:02:44Z",
+  "author_association": "OWNER",
+  "reactions": {
+    "url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/issues/12/reactions",
+    "total_count": 0
+  },
+  "timeline_url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/issues/12/timeline",
+  "performed_via_github_app": null
+}

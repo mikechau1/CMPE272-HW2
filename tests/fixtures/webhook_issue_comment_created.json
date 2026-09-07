@@ -1,0 +1,28 @@
+{
+  "action": "created",
+  "issue": {
+    "id": 2451900001,
+    "number": 12,
+    "title": "Rate limiter drops the Retry-After header",
+    "state": "open",
+    "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/issues/12",
+    "user": { "login": "mikechau1", "id": 583920, "type": "User" },
+    "comments": 1
+  },
+  "comment": {
+    "id": 3310028841,
+    "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/issues/12#issuecomment-3310028841",
+    "issue_url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/issues/12",
+    "body": "Confirmed on staging -- see the attached trace.",
+    "user": { "login": "mikechau1", "id": 583920, "type": "User" },
+    "created_at": "2026-09-06T19:02:44Z",
+    "updated_at": "2026-09-06T19:02:44Z"
+  },
+  "repository": {
+    "id": 889012345,
+    "full_name": "mikechau1/cmpe272-issues-gw",
+    "private": true,
+    "owner": { "login": "mikechau1", "id": 583920, "type": "User" }
+  },
+  "sender": { "login": "mikechau1", "id": 583920, "type": "User" }
+}

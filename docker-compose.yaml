@@ -1,0 +1,58 @@
+# Local stack: the gateway, plus an optional Cloudflare tunnel that gives
+# GitHub a public URL to deliver webhooks to.
+#
+#   docker compose up --build              # gateway only
+#   docker compose --profile tunnel up     # gateway + public tunnel
+#
+# Secrets come from .env (git-ignored). Nothing is baked into the image.
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: issues-gateway:local
+    container_name: issues-gateway
+    env_file:
+      - .env
+    environment:
+      # Container-internal overrides; everything else comes from .env.
+      PORT: 8000
+      LOG_FORMAT: json
+      EVENT_STORE_PATH: /data/events.db
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # Persist the webhook event store so dedupe survives a restart.
+      - gateway-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # Public HTTPS URL for GitHub to deliver webhooks to, without opening a port
+  # on your machine. The URL is printed in this container's logs on startup.
+  #
+  #   docker compose --profile tunnel up
+  #   docker compose logs tunnel | grep trycloudflare
+  #
+  # Paste that URL + /webhook into the repository's webhook settings.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: issues-gateway-tunnel
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate --url http://gateway:8000
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  gateway-data:

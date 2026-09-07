@@ -1,0 +1,32 @@
+# --- secrets & local config -------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# --- test / coverage --------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.ruff_cache/
+
+# --- runtime data -----------------------------------------------------------
+data/
+*.db
+*.sqlite3
+
+# --- editors / os -----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/

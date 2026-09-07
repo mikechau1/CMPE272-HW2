@@ -1,0 +1,1183 @@
+openapi: 3.1.0
+
+info:
+  title: GitHub Issues Gateway
+  version: 1.0.0
+  summary: A validated HTTP gateway over the GitHub Issues REST API.
+  description: |
+    A small service that fronts the GitHub Issues REST API for one configured
+    repository (`GITHUB_OWNER/GITHUB_REPO`) and ingests that repository's
+    webhooks.
+
+    ## Authentication
+
+    Clients of *this* API are unauthenticated -- it is intended to run on
+    localhost or behind your own gateway. The service authenticates to GitHub
+    on the caller's behalf using a fine-grained PAT supplied out-of-band in
+    `GITHUB_TOKEN`; that is the `githubToken` security scheme below. It is
+    declared on the routes that reach GitHub so the dependency is explicit in
+    the contract, but it is **never** accepted from the client.
+
+    `POST /webhook` is authenticated differently: GitHub signs each delivery
+    with an HMAC-SHA256 of the raw body under `WEBHOOK_SECRET`, carried in
+    `X-Hub-Signature-256`. That is the `webhookSignature` scheme.
+
+    ## Deleting issues
+
+    GitHub's REST API has no "delete issue" operation. Deletion is modelled as
+    `PATCH /issues/{number}` with `{"state": "closed"}`.
+
+    ## Pagination
+
+    `GET /issues` and `GET /issues/{number}/comments` accept `page` and
+    `per_page` (max 100) and return an RFC 8288 `Link` header whose `first`,
+    `prev`, `next` and `last` URLs point back at **this** service, preserving
+    the caller's filters.
+
+    ## Rate limits
+
+    GitHub's `X-RateLimit-*` headers are forwarded on every proxied response.
+    When the budget is exhausted the gateway answers `429` with `Retry-After`
+    rather than passing GitHub's `403` through.
+
+  contact:
+    name: CMPE 272 HW2
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: http://localhost:{port}
+    description: Local development
+    variables:
+      port:
+        default: "8000"
+        description: The value of the PORT environment variable.
+
+tags:
+  - name: issues
+    description: Issue and comment operations proxied to GitHub.
+  - name: webhooks
+    description: Inbound GitHub deliveries and the processed-event log.
+  - name: ops
+    description: Health and readiness probes.
+
+paths:
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: healthz
+      summary: Liveness probe
+      description: |
+        Reports process health without calling GitHub, so an upstream outage
+        or an exhausted rate limit never restarts the container.
+      responses:
+        "200":
+          description: The process is healthy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+              examples:
+                healthy:
+                  summary: Fully configured and serving
+                  value:
+                    status: ok
+                    version: "1.0.0"
+                    uptime_s: 128.402
+                    repo: mikechau1/cmpe272-issues-gw
+                    config:
+                      complete: true
+                      missing_env: []
+                      etag_cache: true
+                    event_store:
+                      ok: true
+                      path: data/events.db
+                      events: 7
+        "503":
+          description: The event store is unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /readyz:
+    get:
+      tags: [ops]
+      operationId: readyz
+      summary: Readiness probe
+      description: |
+        Verifies configuration completeness. With `deep=true` it also performs
+        one authenticated GitHub call to confirm the token can see the repo --
+        that call consumes rate-limit budget, so keep it off the hot path.
+      parameters:
+        - name: deep
+          in: query
+          required: false
+          description: Also verify GitHub reachability and credentials.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+              examples:
+                ready:
+                  value:
+                    status: ok
+                    missing_env: []
+                    github: { reachable: true, repo: mikechau1/cmpe272-issues-gw }
+                    rate_limit: { limit: 5000, remaining: 4993, reset: 1757203200 }
+        "503":
+          description: Configuration is incomplete or GitHub is unreachable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+              examples:
+                missing_config:
+                  value:
+                    status: not_ready
+                    missing_env: [GITHUB_TOKEN, WEBHOOK_SECRET]
+
+  /issues:
+    get:
+      tags: [issues]
+      operationId: listIssues
+      summary: List issues
+      description: |
+        Lists issues for the configured repository, preserving GitHub's
+        pagination semantics. Pull requests are filtered out: GitHub serves
+        them from the same endpoint, but this is an issues API.
+
+        Supports conditional GET. Send the `ETag` from a previous response back
+        as `If-None-Match` to get a `304` and save both bandwidth and GitHub
+        rate-limit budget.
+      security:
+        - githubToken: []
+      parameters:
+        - $ref: "#/components/parameters/StateFilter"
+        - $ref: "#/components/parameters/Labels"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: sort
+          in: query
+          required: false
+          description: Field to sort by.
+          schema: { type: string, enum: [created, updated, comments] }
+        - name: direction
+          in: query
+          required: false
+          description: Sort direction.
+          schema: { type: string, enum: [asc, desc] }
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: A page of issues.
+          headers:
+            Link: { $ref: "#/components/headers/Link" }
+            ETag: { $ref: "#/components/headers/ETag" }
+            X-Page: { $ref: "#/components/headers/XPage" }
+            X-Per-Page: { $ref: "#/components/headers/XPerPage" }
+            X-Cache: { $ref: "#/components/headers/XCache" }
+            X-Request-ID: { $ref: "#/components/headers/XRequestId" }
+            X-RateLimit-Limit: { $ref: "#/components/headers/RateLimitLimit" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+            X-RateLimit-Reset: { $ref: "#/components/headers/RateLimitReset" }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Issue" }
+              examples:
+                page:
+                  summary: First page, open issues
+                  value:
+                    - number: 12
+                      id: 2451900001
+                      title: Rate limiter drops the Retry-After header
+                      body: Reproduced on main at 0f21ac9.
+                      state: open
+                      state_reason: null
+                      labels:
+                        - { name: bug, color: d73a4a, description: Something is broken }
+                      user: { login: mikechau1, id: 583920, type: User, html_url: "https://github.com/mikechau1", avatar_url: "https://avatars.githubusercontent.com/u/583920?v=4" }
+                      assignees: []
+                      comments: 2
+                      locked: false
+                      html_url: "https://github.com/mikechau1/cmpe272-issues-gw/issues/12"
+                      created_at: "2026-09-06T18:20:11Z"
+                      updated_at: "2026-09-06T19:02:44Z"
+                      closed_at: null
+        "304":
+          description: |
+            The client's `If-None-Match` matched the current representation.
+            No body is returned.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+            X-Cache: { $ref: "#/components/headers/XCache" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+
+    post:
+      tags: [issues]
+      operationId: createIssue
+      summary: Create an issue
+      security:
+        - githubToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateIssueRequest" }
+            examples:
+              minimal:
+                summary: Title only
+                value: { title: Something is broken }
+              full:
+                summary: With body and labels
+                value:
+                  title: Rate limiter drops the Retry-After header
+                  body: "Reproduced on main at 0f21ac9.\n\nSteps: ..."
+                  labels: [bug, gateway]
+      responses:
+        "201":
+          description: The issue was created.
+          headers:
+            Location:
+              description: Path of the newly created issue on **this** service.
+              schema: { type: string, examples: ["/issues/12"] }
+            X-Request-ID: { $ref: "#/components/headers/XRequestId" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+              examples:
+                created:
+                  value:
+                    number: 12
+                    id: 2451900001
+                    title: Rate limiter drops the Retry-After header
+                    body: Reproduced on main at 0f21ac9.
+                    state: open
+                    state_reason: null
+                    labels:
+                      - { name: bug, color: d73a4a, description: Something is broken }
+                    user: { login: mikechau1, id: 583920, type: User, html_url: "https://github.com/mikechau1", avatar_url: "https://avatars.githubusercontent.com/u/583920?v=4" }
+                    assignees: []
+                    comments: 0
+                    locked: false
+                    html_url: "https://github.com/mikechau1/cmpe272-issues-gw/issues/12"
+                    created_at: "2026-09-06T18:20:11Z"
+                    updated_at: "2026-09-06T18:20:11Z"
+                    closed_at: null
+        "400":
+          description: The request body failed validation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                missing_title:
+                  summary: title is required
+                  value:
+                    error:
+                      code: validation_error
+                      message: "Request validation failed -- body.title: Field required"
+                      status: 400
+                      request_id: 8f14e45fceea167a5a36dedd4bea2543
+                      details:
+                        - field: body.title
+                          message: Field required
+                          type: missing
+                          input: { body: "no title here" }
+                blank_title:
+                  summary: whitespace-only title
+                  value:
+                    error:
+                      code: validation_error
+                      message: "Request validation failed -- body.title: Value error, title must contain at least one non-whitespace character"
+                      status: 400
+                      request_id: c9f0f895fb98ab9159f51fd0297e236d
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+
+  /issues/{number}:
+    parameters:
+      - $ref: "#/components/parameters/IssueNumber"
+    get:
+      tags: [issues]
+      operationId: getIssue
+      summary: Get a single issue
+      security:
+        - githubToken: []
+      responses:
+        "200":
+          description: The issue.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/XRequestId" }
+            X-RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: |
+            No such issue, or `{number}` refers to a pull request. GitHub also
+            answers 404 (rather than 403) for resources the token cannot see.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                missing:
+                  value:
+                    error:
+                      code: not_found
+                      message: "Not found while fetching issue #999. Either the resource does not exist or the token cannot see it (GitHub returns 404 rather than 403 for private resources). GitHub said: Not Found."
+                      status: 404
+                      request_id: 45c48cce2e2d7fbdea1afc51c7c6ad26
+                      upstream_status: 404
+                pull_request:
+                  value:
+                    error:
+                      code: not_an_issue
+                      message: "#7 is a pull request, not an issue. This gateway exposes issues only."
+                      status: 404
+                      request_id: d3d9446802a44259755d38e6d163e820
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+
+    patch:
+      tags: [issues]
+      operationId: updateIssue
+      summary: Update an issue (rename, edit, close, or reopen)
+      description: |
+        Partial update. Only the keys present in the body are sent upstream, so
+        omitting a field leaves it untouched while sending `"body": null`
+        explicitly clears it.
+
+        This is also the "delete" operation: `{"state": "closed"}`.
+      security:
+        - githubToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateIssueRequest" }
+            examples:
+              rename:
+                summary: Rename
+                value: { title: "Rate limiter drops Retry-After (confirmed)" }
+              close:
+                summary: Close -- the "D" in CRUD
+                value: { state: closed, state_reason: completed }
+              reopen:
+                summary: Reopen
+                value: { state: open }
+              edit_body:
+                summary: Edit the body
+                value: { body: "Updated repro steps." }
+      responses:
+        "200":
+          description: The updated issue.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Issue" }
+              examples:
+                closed:
+                  value:
+                    number: 12
+                    id: 2451900001
+                    title: Rate limiter drops the Retry-After header
+                    body: Updated repro steps.
+                    state: closed
+                    state_reason: completed
+                    labels: []
+                    user: { login: mikechau1, id: 583920, type: User, html_url: "https://github.com/mikechau1", avatar_url: "https://avatars.githubusercontent.com/u/583920?v=4" }
+                    assignees: []
+                    comments: 2
+                    locked: false
+                    html_url: "https://github.com/mikechau1/cmpe272-issues-gw/issues/12"
+                    created_at: "2026-09-06T18:20:11Z"
+                    updated_at: "2026-09-06T20:15:03Z"
+                    closed_at: "2026-09-06T20:15:03Z"
+        "400":
+          description: Invalid body -- unknown state, no fields supplied, or unknown key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                invalid_state:
+                  value:
+                    error:
+                      code: validation_error
+                      message: "Request validation failed -- body.state: Input should be 'open' or 'closed'"
+                      status: 400
+                      request_id: 6512bd43d9caa6e02c990b0a82652dca
+                      details:
+                        - field: body.state
+                          message: "Input should be 'open' or 'closed'"
+                          type: literal_error
+                          input: deleted
+                empty_patch:
+                  value:
+                    error:
+                      code: validation_error
+                      message: "Request validation failed -- body: Value error, provide at least one of: title, body, state, state_reason, labels"
+                      status: 400
+                      request_id: c20ad4d76fe97759aa27a0c99bff6710
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+
+  /issues/{number}/comments:
+    parameters:
+      - $ref: "#/components/parameters/IssueNumber"
+    get:
+      tags: [issues]
+      operationId: listComments
+      summary: List an issue's comments
+      security:
+        - githubToken: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: A page of comments.
+          headers:
+            Link: { $ref: "#/components/headers/Link" }
+            X-Page: { $ref: "#/components/headers/XPage" }
+            X-Per-Page: { $ref: "#/components/headers/XPerPage" }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Comment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+
+    post:
+      tags: [issues]
+      operationId: createComment
+      summary: Comment on an issue
+      security:
+        - githubToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCommentRequest" }
+            examples:
+              simple:
+                value: { body: "Confirmed on staging -- see the attached trace." }
+      responses:
+        "201":
+          description: The comment was created.
+          headers:
+            Location:
+              description: The comment collection for this issue on **this** service.
+              schema: { type: string, examples: ["/issues/12/comments"] }
+            X-Request-ID: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+              examples:
+                created:
+                  value:
+                    id: 3310028841
+                    body: "Confirmed on staging -- see the attached trace."
+                    user: { login: mikechau1, id: 583920, type: User, html_url: "https://github.com/mikechau1", avatar_url: "https://avatars.githubusercontent.com/u/583920?v=4" }
+                    html_url: "https://github.com/mikechau1/cmpe272-issues-gw/issues/12#issuecomment-3310028841"
+                    issue_url: "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/issues/12"
+                    created_at: "2026-09-06T19:02:44Z"
+                    updated_at: "2026-09-06T19:02:44Z"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                empty_body:
+                  value:
+                    error:
+                      code: validation_error
+                      message: "Request validation failed -- body.body: String should have at least 1 character"
+                      status: 400
+                      request_id: aab3238922bcc25a6f606eb525ffdc56
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+
+  /webhook:
+    post:
+      tags: [webhooks]
+      operationId: receiveWebhook
+      summary: Receive a GitHub webhook delivery
+      description: |
+        Verifies `X-Hub-Signature-256` against `WEBHOOK_SECRET` with a
+        constant-time comparison **before** parsing the body, persists the
+        delivery, acks `204`, and interprets it in the background.
+
+        Idempotent: `(X-GitHub-Delivery, event, action)` is the dedupe key, so
+        GitHub's automatic retries and manual "Redeliver" both ack `204`
+        without producing a second stored event.
+      security:
+        - webhookSignature: []
+      parameters:
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          description: Event name. One of `issues`, `issue_comment`, `ping`.
+          schema: { type: string, enum: [issues, issue_comment, ping] }
+        - name: X-GitHub-Delivery
+          in: header
+          required: false
+          description: |
+            GitHub's delivery GUID, used as the dedupe key. If absent, a SHA-256
+            of the body is substituted so replays still dedupe.
+          schema: { type: string, format: uuid }
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          description: "`sha256=` followed by the hex HMAC-SHA256 of the raw body."
+          schema: { type: string, pattern: "^sha256=[0-9a-fA-F]{64}$" }
+      requestBody:
+        required: true
+        description: The raw GitHub event payload. Signed over byte-for-byte.
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookPayload" }
+            examples:
+              issue_opened:
+                summary: issues / opened
+                value:
+                  action: opened
+                  issue:
+                    number: 12
+                    title: Rate limiter drops the Retry-After header
+                    state: open
+                  repository: { full_name: mikechau1/cmpe272-issues-gw }
+                  sender: { login: mikechau1 }
+              comment_created:
+                summary: issue_comment / created
+                value:
+                  action: created
+                  issue: { number: 12, title: Rate limiter drops the Retry-After header }
+                  comment: { id: 3310028841, body: Confirmed on staging. }
+                  repository: { full_name: mikechau1/cmpe272-issues-gw }
+                  sender: { login: mikechau1 }
+              ping:
+                summary: ping
+                value:
+                  zen: Non-blocking is better than blocking.
+                  hook_id: 552341190
+                  hook: { type: Repository, events: [issues, issue_comment] }
+      responses:
+        "204":
+          description: |
+            Delivery accepted (or recognised as a duplicate and ignored).
+            No body.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/XRequestId" }
+        "400":
+          description: Unknown event, unknown action, or malformed JSON.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                unsupported_event:
+                  value:
+                    error:
+                      code: unsupported_event
+                      message: "Unsupported webhook event 'push'. This gateway handles: issue_comment, issues, ping."
+                      status: 400
+                      request_id: 9bf31c7ff062936a96d3c8bd1f8f2ff3
+                      details: { event: push, supported: [issue_comment, issues, ping] }
+                unsupported_action:
+                  value:
+                    error:
+                      code: unsupported_action
+                      message: "Unsupported action 'exploded' for event 'issues'."
+                      status: 400
+                      request_id: c74d97b01eae257e44aa9d5bade97baf
+        "401":
+          description: The signature was missing, malformed, or did not match.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                bad_signature:
+                  value:
+                    error:
+                      code: invalid_signature
+                      message: "Invalid or missing X-Hub-Signature-256. The delivery body did not match an HMAC-SHA256 computed with WEBHOOK_SECRET."
+                      status: 401
+                      request_id: 70efdf2ec9b086079795c442636b55fb
+        "413":
+          description: The delivery body exceeded the configured size limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+
+  /events:
+    get:
+      tags: [webhooks]
+      operationId: listEvents
+      summary: Recent webhook deliveries
+      description: |
+        The last N deliveries this service accepted, newest first. Intended for
+        debugging and for asserting end-to-end webhook behaviour in tests.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of deliveries to return.
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: event
+          in: query
+          required: false
+          description: Restrict to one event type.
+          schema: { type: string, enum: [issues, issue_comment, ping] }
+      responses:
+        "200":
+          description: Recent deliveries, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/StoredEvent" }
+              examples:
+                recent:
+                  value:
+                    - id: 42
+                      delivery_id: 4f1a2b60-8c3d-11f0-9e21-9b4a2c1d7e55
+                      event: issue_comment
+                      action: created
+                      issue_number: 12
+                      repository: mikechau1/cmpe272-issues-gw
+                      sender: mikechau1
+                      status: processed
+                      error: null
+                      attempts: 1
+                      timestamp: "2026-09-06T19:02:45.113Z"
+                      processed_at: "2026-09-06T19:02:45.119Z"
+                    - id: 41
+                      delivery_id: 3ab0c14e-8c3d-11f0-8f77-1d2e3f4a5b6c
+                      event: issues
+                      action: opened
+                      issue_number: 12
+                      repository: mikechau1/cmpe272-issues-gw
+                      sender: mikechau1
+                      status: processed
+                      error: null
+                      attempts: 1
+                      timestamp: "2026-09-06T18:20:12.004Z"
+                      processed_at: "2026-09-06T18:20:12.010Z"
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+components:
+  securitySchemes:
+    githubToken:
+      type: http
+      scheme: bearer
+      bearerFormat: GitHub fine-grained PAT
+      description: |
+        The server-side credential this gateway uses to call GitHub, supplied
+        via the `GITHUB_TOKEN` environment variable. Declared so the dependency
+        is visible in the contract; it is **never** read from the client
+        request.
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Hub-Signature-256
+      description: |
+        HMAC-SHA256 of the raw request body keyed with `WEBHOOK_SECRET`,
+        formatted as `sha256=<hex>` and compared in constant time.
+
+  parameters:
+    IssueNumber:
+      name: number
+      in: path
+      required: true
+      description: Issue number within the repository (not the global issue id).
+      schema: { type: integer, minimum: 1, examples: [12] }
+    StateFilter:
+      name: state
+      in: query
+      required: false
+      description: Filter by issue state.
+      schema: { type: string, enum: [open, closed, all], default: open }
+    Labels:
+      name: labels
+      in: query
+      required: false
+      description: Comma-separated label names; a matching issue carries all of them.
+      schema: { type: string, examples: ["bug,gateway"] }
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 1-based page number.
+      schema: { type: integer, minimum: 1, default: 1 }
+    PerPage:
+      name: per_page
+      in: query
+      required: false
+      description: Results per page. GitHub's ceiling of 100 is enforced here too.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: A previously returned `ETag`; matching yields `304 Not Modified`.
+      schema: { type: string, examples: ['W/"gw1-a1b2c3d4e5f6"'] }
+
+  headers:
+    Link:
+      description: RFC 8288 pagination links rewritten to point at this service.
+      schema:
+        type: string
+        examples: ['</issues?state=open&page=2&per_page=30>; rel="next", </issues?state=open&page=5&per_page=30>; rel="last"']
+    ETag:
+      description: Entity tag for conditional GET; send it back as `If-None-Match`.
+      schema: { type: string, examples: ['W/"gw1-a1b2c3d4e5f6"'] }
+    XPage:
+      description: The page number that was served.
+      schema: { type: integer, examples: [1] }
+    XPerPage:
+      description: The page size that was applied after clamping.
+      schema: { type: integer, examples: [30] }
+    XCache:
+      description: Whether the upstream body came from the conditional-GET cache.
+      schema: { type: string, enum: [HIT, MISS] }
+    XRequestId:
+      description: Correlation id, echoed from the request or generated.
+      schema: { type: string, examples: [8f14e45fceea167a5a36dedd4bea2543] }
+    RateLimitLimit:
+      description: GitHub's rate-limit ceiling for the credential in use.
+      schema: { type: integer, examples: [5000] }
+    RateLimitRemaining:
+      description: Requests remaining in the current GitHub rate-limit window.
+      schema: { type: integer, examples: [4993] }
+    RateLimitReset:
+      description: Unix epoch second at which GitHub's window resets.
+      schema: { type: integer, examples: [1757203200] }
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer, examples: [60] }
+
+  schemas:
+    Error:
+      type: object
+      description: The single error shape returned by every failing route.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message, status]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable identifier for the failure.
+              examples: [validation_error, not_found, rate_limited, github_unauthorized]
+            message:
+              type: string
+              description: Human-readable explanation, safe to show a developer.
+            status:
+              type: integer
+              description: HTTP status of this response.
+              minimum: 400
+              maximum: 599
+            request_id:
+              type: string
+              description: Correlation id; matches the `X-Request-ID` header and the logs.
+            upstream_status:
+              type: [integer, "null"]
+              description: GitHub's status code, when the failure originated upstream.
+            details:
+              description: Structured specifics -- field errors, or GitHub's `errors` array.
+              type: [array, object, "null"]
+
+    User:
+      type: object
+      description: The subset of a GitHub account this API exposes.
+      properties:
+        login: { type: [string, "null"] }
+        id: { type: [integer, "null"] }
+        type: { type: [string, "null"], examples: [User, Bot, Organization] }
+        html_url: { type: [string, "null"], format: uri }
+        avatar_url: { type: [string, "null"], format: uri }
+
+    Label:
+      type: object
+      properties:
+        name: { type: [string, "null"], examples: [bug] }
+        color: { type: [string, "null"], description: Six-digit hex, without '#'., examples: [d73a4a] }
+        description: { type: [string, "null"] }
+
+    Issue:
+      type: object
+      description: A GitHub issue, projected onto this API's stable surface.
+      required: [number, title, state, labels, html_url, created_at, updated_at]
+      properties:
+        number: { type: integer, description: Issue number within the repository., examples: [12] }
+        id: { type: [integer, "null"], description: GitHub's global issue id. }
+        title: { type: string }
+        body: { type: [string, "null"] }
+        state: { type: string, enum: [open, closed] }
+        state_reason:
+          type: [string, "null"]
+          enum: [completed, not_planned, reopened, duplicate, null]
+        labels:
+          type: array
+          items: { $ref: "#/components/schemas/Label" }
+        user: { oneOf: [{ $ref: "#/components/schemas/User" }, { type: "null" }] }
+        assignees:
+          type: array
+          description: Assignee logins.
+          items: { type: string }
+        comments: { type: [integer, "null"], description: Comment count. }
+        locked: { type: [boolean, "null"] }
+        html_url: { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        closed_at: { type: [string, "null"], format: date-time }
+
+    Comment:
+      type: object
+      required: [id, body, html_url, created_at]
+      properties:
+        id: { type: integer, examples: [3310028841] }
+        body: { type: [string, "null"] }
+        user: { oneOf: [{ $ref: "#/components/schemas/User" }, { type: "null" }] }
+        html_url: { type: string, format: uri }
+        issue_url: { type: [string, "null"], format: uri }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: [string, "null"], format: date-time }
+
+    CreateIssueRequest:
+      type: object
+      required: [title]
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Must contain at least one non-whitespace character.
+        body: { type: [string, "null"], maxLength: 65536 }
+        labels:
+          type: [array, "null"]
+          maxItems: 100
+          items: { type: string, minLength: 1 }
+          description: Label names. Labels that do not exist are created by GitHub.
+
+    UpdateIssueRequest:
+      type: object
+      description: |
+        At least one property must be present. Absent keys are not forwarded;
+        an explicit `null` for `body` clears it.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        title: { type: string, minLength: 1, maxLength: 256 }
+        body: { type: [string, "null"], maxLength: 65536 }
+        state:
+          type: string
+          enum: [open, closed]
+          description: "`closed` is this API's stand-in for DELETE."
+        state_reason:
+          type: [string, "null"]
+          enum: [completed, not_planned, reopened, null]
+        labels:
+          type: [array, "null"]
+          maxItems: 100
+          items: { type: string, minLength: 1 }
+          description: Replaces the full label set when present.
+
+    CreateCommentRequest:
+      type: object
+      required: [body]
+      additionalProperties: false
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: Must contain at least one non-whitespace character.
+
+    WebhookPayload:
+      type: object
+      description: |
+        GitHub's event payload. Only the fields this service reads are
+        described; everything else is stored verbatim and ignored.
+      properties:
+        action:
+          type: string
+          description: Required for `issues` and `issue_comment`; absent on `ping`.
+        issue:
+          type: object
+          properties:
+            number: { type: integer }
+            title: { type: string }
+            state: { type: string }
+        comment:
+          type: object
+          properties:
+            id: { type: integer }
+            body: { type: string }
+        repository:
+          type: object
+          properties:
+            full_name: { type: string, examples: [mikechau1/cmpe272-issues-gw] }
+        sender:
+          type: object
+          properties:
+            login: { type: string }
+        zen: { type: string, description: Present on `ping` only. }
+        hook_id: { type: integer, description: Present on `ping` only. }
+
+    StoredEvent:
+      type: object
+      description: One accepted webhook delivery as recorded by this service.
+      required: [id, event, timestamp]
+      properties:
+        id: { type: integer, description: Monotonic local id. }
+        delivery_id: { type: string, description: GitHub's `X-GitHub-Delivery` GUID. }
+        event: { type: string, enum: [issues, issue_comment, ping] }
+        action: { type: [string, "null"], examples: [opened, closed, created] }
+        issue_number: { type: [integer, "null"] }
+        repository: { type: [string, "null"] }
+        sender: { type: [string, "null"] }
+        status:
+          type: string
+          enum: [received, processed, failed]
+          description: "`failed` marks a poison delivery, parked with its error."
+        error: { type: [string, "null"] }
+        attempts: { type: integer }
+        timestamp: { type: string, format: date-time, description: When the delivery was accepted. }
+        processed_at: { type: [string, "null"], format: date-time }
+
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string, examples: ["1.0.0"] }
+        uptime_s: { type: number }
+        repo: { type: [string, "null"], examples: [mikechau1/cmpe272-issues-gw] }
+        config:
+          type: object
+          properties:
+            complete: { type: boolean }
+            missing_env:
+              type: array
+              items: { type: string }
+            etag_cache: { type: boolean }
+        event_store:
+          type: object
+          properties:
+            ok: { type: boolean }
+            path: { type: string }
+            events: { type: integer }
+
+    Readiness:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, not_ready] }
+        missing_env:
+          type: array
+          items: { type: string }
+        github:
+          type: object
+          properties:
+            reachable: { type: boolean }
+            repo: { type: string }
+            error: { type: string }
+            message: { type: string }
+        rate_limit:
+          type: object
+          properties:
+            limit: { type: [integer, "null"] }
+            remaining: { type: [integer, "null"] }
+            reset: { type: [integer, "null"] }
+
+  responses:
+    BadRequest:
+      description: The request failed validation.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            invalid_state:
+              value:
+                error:
+                  code: validation_error
+                  message: "Request validation failed -- query.state: Input should be 'open', 'closed' or 'all'"
+                  status: 400
+                  request_id: 1679091c5a880faf6fb5e6087eb1b2dc
+                  details:
+                    - field: query.state
+                      message: "Input should be 'open', 'closed' or 'all'"
+                      type: literal_error
+                      input: sideways
+            per_page_too_large:
+              value:
+                error:
+                  code: validation_error
+                  message: "Request validation failed -- query.per_page: Input should be less than or equal to 100"
+                  status: 400
+                  request_id: 8f14e45fceea167a5a36dedd4bea2543
+
+    Unauthorized:
+      description: |
+        The gateway has no usable GitHub credential, or GitHub rejected it.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            missing_token:
+              value:
+                error:
+                  code: missing_credentials
+                  message: "GITHUB_TOKEN is not set, so the gateway has no credentials to call GitHub with. Set a fine-grained PAT with 'Issues: Read and write' on the configured repository."
+                  status: 401
+                  request_id: e4da3b7fbbce2345d7772b0674a318d5
+            rejected_token:
+              value:
+                error:
+                  code: github_unauthorized
+                  message: "GitHub rejected the configured GITHUB_TOKEN. Check that the token is valid, unexpired, and scoped to this repository. GitHub said: Bad credentials."
+                  status: 401
+                  request_id: 1c383cd30b7c298ab50293adfecb7b18
+                  upstream_status: 401
+
+    Forbidden:
+      description: |
+        The token is valid but lacks `Issues: Read and write`, or the
+        repository has issues disabled.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            insufficient_permission:
+              value:
+                error:
+                  code: github_forbidden
+                  message: "GitHub denied the request. The token is valid but lacks the required permission (Issues: Read and write) on this repository, or the repository has issues disabled. GitHub said: Resource not accessible by personal access token."
+                  status: 403
+                  request_id: aab3238922bcc25a6f606eb525ffdc56
+                  upstream_status: 403
+
+    NotFound:
+      description: The resource does not exist, or the token cannot see it.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            missing:
+              value:
+                error:
+                  code: not_found
+                  message: "Not found while fetching issue #999. Either the resource does not exist or the token cannot see it (GitHub returns 404 rather than 403 for private resources). GitHub said: Not Found."
+                  status: 404
+                  request_id: 45c48cce2e2d7fbdea1afc51c7c6ad26
+                  upstream_status: 404
+
+    RateLimited:
+      description: |
+        GitHub's rate limit is exhausted. `Retry-After` says how long to wait.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+        X-RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+        X-RateLimit-Reset: { $ref: "#/components/headers/RateLimitReset" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            primary:
+              value:
+                error:
+                  code: rate_limited
+                  message: "GitHub primary rate limit exhausted while listing issues (limit 5000/hour). Retry after 1800s. GitHub said: API rate limit exceeded."
+                  status: 429
+                  request_id: d3d9446802a44259755d38e6d163e820
+                  upstream_status: 403
+
+    UpstreamError:
+      description: GitHub returned 5xx, or was unreachable.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            github_down:
+              value:
+                error:
+                  code: github_unavailable
+                  message: "GitHub returned 503 while listing issues and the request could not be completed. This is an upstream fault; retry shortly."
+                  status: 502
+                  request_id: 6512bd43d9caa6e02c990b0a82652dca
+                  upstream_status: 503
+
+    UpstreamTimeout:
+      description: The GitHub call exceeded `GITHUB_TIMEOUT_S`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            timeout:
+              value:
+                error:
+                  code: github_timeout
+                  message: "Timed out talking to the GitHub API while creating an issue. The gateway gave up waiting; the upstream request may or may not have been applied."
+                  status: 504
+                  request_id: c20ad4d76fe97759aa27a0c99bff6710
+
+    NotConfigured:
+      description: A required environment variable is unset.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            missing_repo:
+              value:
+                error:
+                  code: not_configured
+                  message: "GITHUB_OWNER and GITHUB_REPO must both be set for the gateway to know which repository to operate on."
+                  status: 503
+                  request_id: c74d97b01eae257e44aa9d5bade97baf
+            missing_secret:
+              value:
+                error:
+                  code: not_configured
+                  message: "WEBHOOK_SECRET is not set, so delivery signatures cannot be verified. The gateway refuses unsigned webhook traffic."
+                  status: 503
+                  request_id: 70efdf2ec9b086079795c442636b55fb

@@ -1,0 +1,532 @@
+{
+  "info": {
+    "_postman_id": "6f3c1b20-2a7e-4d61-9c3a-1f0b8de4a911",
+    "name": "GitHub Issues Gateway (CMPE 272 HW2)",
+    "description": "Every route of the issues gateway.\n\n## Setup\n\n1. Start the service: `./scripts/run.sh`\n2. Set the collection variables:\n   - `baseUrl` — defaults to `http://localhost:8000`\n   - `webhookSecret` — must match `WEBHOOK_SECRET` in your `.env`\n3. Run **Create issue** first; it captures `issueNumber` into a collection variable that the later requests reuse.\n\nThe webhook requests compute a real `X-Hub-Signature-256` in a pre-request script, so **Webhook — valid signature** returns 204 and **Webhook — tampered body** returns 401.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000", "type": "string" },
+    { "key": "webhookSecret", "value": "change-me-to-match-your-.env", "type": "string" },
+    { "key": "issueNumber", "value": "", "type": "string" },
+    { "key": "listEtag", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Ops",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/healthz", "host": ["{{baseUrl}}"], "path": ["healthz"] },
+            "description": "Liveness. Never calls GitHub."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('configuration is complete', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.config.missing_env, 'missing env vars').to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness (deep)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/readyz?deep=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["readyz"],
+              "query": [{ "key": "deep", "value": "true" }]
+            },
+            "description": "Verifies the token can actually see the repository. Spends one GitHub call."
+          }
+        },
+        {
+          "name": "OpenAPI contract",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/openapi.yaml", "host": ["{{baseUrl}}"], "path": ["openapi.yaml"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Issues",
+      "item": [
+        {
+          "name": "Create issue",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Rate limiter drops the Retry-After header\",\n  \"body\": \"Reproduced on main at 0f21ac9.\",\n  \"labels\": [\"bug\"]\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/issues", "host": ["{{baseUrl}}"], "path": ["issues"] },
+            "description": "201 Created, with a Location header pointing at /issues/{number}."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const issue = pm.response.json();",
+                  "pm.test('Location points at the new issue', () => {",
+                  "  pm.expect(pm.response.headers.get('Location')).to.eql('/issues/' + issue.number);",
+                  "});",
+                  "pm.collectionVariables.set('issueNumber', issue.number);",
+                  "console.log('captured issueNumber =', issue.number);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create issue — missing title (400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"body\": \"no title supplied\"\n}" },
+            "url": { "raw": "{{baseUrl}}/issues", "host": ["{{baseUrl}}"], "path": ["issues"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('uses the error envelope', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('validation_error');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List issues",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/issues?state=open&per_page=5&page=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues"],
+              "query": [
+                { "key": "state", "value": "open" },
+                { "key": "per_page", "value": "5" },
+                { "key": "page", "value": "1" },
+                { "key": "labels", "value": "bug", "disabled": true }
+              ]
+            },
+            "description": "Returns a Link header rewritten to point at this service, plus an ETag."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const etag = pm.response.headers.get('ETag');",
+                  "if (etag) { pm.collectionVariables.set('listEtag', etag); }",
+                  "pm.test('pagination headers are present', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Page')).to.eql('1');",
+                  "  pm.expect(pm.response.headers.get('X-Per-Page')).to.eql('5');",
+                  "});",
+                  "const link = pm.response.headers.get('Link');",
+                  "if (link) {",
+                  "  pm.test('Link points at us, not GitHub', () => {",
+                  "    pm.expect(link).to.not.include('api.github.com');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List issues — conditional GET (304)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "If-None-Match", "value": "{{listEtag}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/issues?state=open&per_page=5&page=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues"],
+              "query": [
+                { "key": "state", "value": "open" },
+                { "key": "per_page", "value": "5" },
+                { "key": "page", "value": "1" }
+              ]
+            },
+            "description": "Run **List issues** first to capture the ETag. Costs no GitHub rate-limit budget."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('304 Not Modified', () => pm.response.to.have.status(304));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get issue",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/issues/{{issueNumber}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "{{issueNumber}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get issue — not found (404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/issues/99999999",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "99999999"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('404 Not Found', () => pm.response.to.have.status(404));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update issue — rename",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Rate limiter drops Retry-After (confirmed)\",\n  \"body\": \"Updated repro steps.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/issues/{{issueNumber}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "{{issueNumber}}"]
+            }
+          }
+        },
+        {
+          "name": "Update issue — close (the \"D\" in CRUD)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"state\": \"closed\",\n  \"state_reason\": \"completed\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/issues/{{issueNumber}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "{{issueNumber}}"]
+            },
+            "description": "GitHub has no delete-issue endpoint, so closing is how this API deletes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('issue is closed', () => pm.expect(pm.response.json().state).to.eql('closed'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update issue — reopen",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"state\": \"open\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/issues/{{issueNumber}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "{{issueNumber}}"]
+            }
+          }
+        },
+        {
+          "name": "Update issue — invalid state (400)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"state\": \"deleted\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/issues/{{issueNumber}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "{{issueNumber}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('400 Bad Request', () => pm.response.to.have.status(400));"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Comments",
+      "item": [
+        {
+          "name": "Create comment",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"body\": \"Confirmed on staging -- see the attached trace.\"\n}" },
+            "url": {
+              "raw": "{{baseUrl}}/issues/{{issueNumber}}/comments",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "{{issueNumber}}", "comments"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('201 Created', () => pm.response.to.have.status(201));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List comments",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/issues/{{issueNumber}}/comments?per_page=30&page=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["issues", "{{issueNumber}}", "comments"],
+              "query": [
+                { "key": "per_page", "value": "30" },
+                { "key": "page", "value": "1" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "Webhook — valid signature (204)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sign exactly the bytes we are about to send, the way GitHub does.",
+                  "const body = pm.request.body.raw;",
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const digest = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-Hub-Signature-256', value: 'sha256=' + digest });",
+                  "pm.request.headers.upsert({ key: 'X-GitHub-Delivery', value: pm.variables.replaceIn('{{$guid}}') });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));",
+                  "pm.test('no body on the ack', () => pm.expect(pm.response.text()).to.be.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-GitHub-Event", "value": "issues" },
+              { "key": "User-Agent", "value": "GitHub-Hookshot/postman" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"opened\",\n  \"issue\": { \"number\": 12, \"title\": \"Rate limiter drops the Retry-After header\", \"state\": \"open\" },\n  \"repository\": { \"full_name\": \"mikechau1/cmpe272-issues-gw\" },\n  \"sender\": { \"login\": \"mikechau1\" }\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/webhook", "host": ["{{baseUrl}}"], "path": ["webhook"] },
+            "description": "The pre-request script computes a real HMAC-SHA256 over the body."
+          }
+        },
+        {
+          "name": "Webhook — tampered body (401)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sign one body, then send a different one: the exact attack HMAC stops.",
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const signedBody = '{\"action\":\"opened\",\"issue\":{\"number\":12}}';",
+                  "const digest = CryptoJS.HmacSHA256(signedBody, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-Hub-Signature-256', value: 'sha256=' + digest });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('reports an invalid signature', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('invalid_signature');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-GitHub-Event", "value": "issues" },
+              { "key": "X-GitHub-Delivery", "value": "tampered-delivery" }
+            ],
+            "body": { "mode": "raw", "raw": "{\"action\":\"opened\",\"issue\":{\"number\":9999}}" },
+            "url": { "raw": "{{baseUrl}}/webhook", "host": ["{{baseUrl}}"], "path": ["webhook"] }
+          }
+        },
+        {
+          "name": "Webhook — unknown event (400)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.request.body.raw;",
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const digest = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-Hub-Signature-256', value: 'sha256=' + digest });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('400 Bad Request', () => pm.response.to.have.status(400));"]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-GitHub-Event", "value": "push" }
+            ],
+            "body": { "mode": "raw", "raw": "{\"ref\":\"refs/heads/main\"}" },
+            "url": { "raw": "{{baseUrl}}/webhook", "host": ["{{baseUrl}}"], "path": ["webhook"] }
+          }
+        },
+        {
+          "name": "Webhook — ping (204)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.request.body.raw;",
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const digest = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-Hub-Signature-256', value: 'sha256=' + digest });",
+                  "pm.request.headers.upsert({ key: 'X-GitHub-Delivery', value: pm.variables.replaceIn('{{$guid}}') });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-GitHub-Event", "value": "ping" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"zen\": \"Non-blocking is better than blocking.\",\n  \"hook_id\": 552341190,\n  \"hook\": { \"type\": \"Repository\", \"events\": [\"issues\", \"issue_comment\"] }\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/webhook", "host": ["{{baseUrl}}"], "path": ["webhook"] }
+          }
+        },
+        {
+          "name": "Recent deliveries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/events?limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"],
+              "query": [
+                { "key": "limit", "value": "20" },
+                { "key": "event", "value": "issues", "disabled": true }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

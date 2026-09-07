@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: ruff check
+        run: ruff check app tests
+      - name: ruff format --check
+        run: ruff format --check app tests
+
+  contract:
+    name: OpenAPI contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Validate openapi.yaml as OpenAPI 3.1
+        run: |
+          python - <<'PY'
+          from openapi_spec_validator import validate
+          from openapi_spec_validator.readers import read_from_filename
+          spec, _ = read_from_filename("openapi.yaml")
+          validate(spec)
+          print("openapi.yaml is valid", spec["openapi"])
+          PY
+
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+
+      # Credential-free: unit tests plus the mocked negative paths. This is the
+      # job that must pass on a fork, where repository secrets are unavailable.
+      - name: Unit and mocked-integration tests
+        run: pytest -m "not integration and not tunnel" --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: error
+
+  integration:
+    name: Integration (live GitHub API)
+    runs-on: ubuntu-latest
+    needs: [test]
+    # Skipped on forks and PRs from forks, where the secrets are not present.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+
+      - name: Run tests against the real repository
+        env:
+          # Repository secret: a fine-grained PAT with Issues: Read and write.
+          GITHUB_TOKEN: ${{ secrets.GH_ISSUES_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO: ${{ secrets.GH_ISSUES_REPO || 'cmpe272-issues-gw' }}
+          WEBHOOK_SECRET: ci-placeholder-secret
+        run: |
+          if [ -z "${GITHUB_TOKEN}" ]; then
+            echo "::notice::GH_ISSUES_TOKEN is not configured; skipping live integration tests."
+            exit 0
+          fi
+          pytest -m integration
+
+  build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: issues-gateway:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot the container and probe it
+        run: |
+          docker run -d --name gw \
+            -e GITHUB_TOKEN=dummy-token-for-boot-check \
+            -e GITHUB_OWNER=octocat \
+            -e GITHUB_REPO=hello-world \
+            -e WEBHOOK_SECRET=boot-check-secret \
+            -e PORT=8000 \
+            -p 8000:8000 issues-gateway:ci
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz > /dev/null; then
+              echo "gateway is healthy after ${attempt}s"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "gateway never became healthy"; docker logs gw; exit 1
+            fi
+            sleep 1
+          done
+
+          echo "--- /healthz ---"
+          curl -fsS http://localhost:8000/healthz
+          echo
+          echo "--- /openapi.yaml (first line) ---"
+          curl -fsS http://localhost:8000/openapi.yaml | head -1
+          echo "--- unsigned webhook must be rejected ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/webhook \
+            -H 'X-GitHub-Event: issues' -H 'Content-Type: application/json' -d '{"action":"opened"}')
+          test "$code" = "401" || { echo "expected 401, got $code"; docker logs gw; exit 1; }
+          echo "ok"
+
+      - name: Container logs
+        if: always()
+        run: docker logs gw || true

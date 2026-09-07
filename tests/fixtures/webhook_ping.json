@@ -1,0 +1,23 @@
+{
+  "zen": "Non-blocking is better than blocking.",
+  "hook_id": 552341190,
+  "hook": {
+    "type": "Repository",
+    "id": 552341190,
+    "name": "web",
+    "active": true,
+    "events": ["issue_comment", "issues"],
+    "config": {
+      "content_type": "json",
+      "insecure_ssl": "0",
+      "url": "https://example.ngrok-free.app/webhook"
+    }
+  },
+  "repository": {
+    "id": 889012345,
+    "full_name": "mikechau1/cmpe272-issues-gw",
+    "private": true,
+    "owner": { "login": "mikechau1", "id": 583920, "type": "User" }
+  },
+  "sender": { "login": "mikechau1", "id": 583920, "type": "User" }
+}

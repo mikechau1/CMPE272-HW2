@@ -1,0 +1,72 @@
+[
+  {
+    "id": 2451900001,
+    "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/issues/12",
+    "number": 12,
+    "state": "open",
+    "state_reason": null,
+    "title": "Rate limiter drops the Retry-After header",
+    "body": "Reproduced on main at 0f21ac9.",
+    "user": {
+      "login": "mikechau1",
+      "id": 583920,
+      "avatar_url": "https://avatars.githubusercontent.com/u/583920?v=4",
+      "html_url": "https://github.com/mikechau1",
+      "type": "User"
+    },
+    "labels": [
+      { "id": 7712345678, "name": "bug", "color": "d73a4a", "description": "Something isn't working" }
+    ],
+    "assignees": [{ "login": "mikechau1", "id": 583920, "type": "User" }],
+    "locked": false,
+    "comments": 2,
+    "closed_at": null,
+    "created_at": "2026-09-06T18:20:11Z",
+    "updated_at": "2026-09-06T19:02:44Z"
+  },
+  {
+    "id": 2451900002,
+    "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/issues/11",
+    "number": 11,
+    "state": "open",
+    "state_reason": null,
+    "title": "Document the webhook dedupe key",
+    "body": null,
+    "user": {
+      "login": "mikechau1",
+      "id": 583920,
+      "avatar_url": "https://avatars.githubusercontent.com/u/583920?v=4",
+      "html_url": "https://github.com/mikechau1",
+      "type": "User"
+    },
+    "labels": [],
+    "assignees": [],
+    "locked": false,
+    "comments": 0,
+    "closed_at": null,
+    "created_at": "2026-09-05T10:00:00Z",
+    "updated_at": "2026-09-05T10:00:00Z"
+  },
+  {
+    "id": 2451900003,
+    "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/pull/10",
+    "number": 10,
+    "state": "open",
+    "title": "Bump httpx to 0.28",
+    "body": "Routine dependency bump.",
+    "user": { "login": "dependabot[bot]", "id": 49699333, "type": "Bot" },
+    "labels": [{ "id": 7712345680, "name": "dependencies", "color": "0366d6", "description": null }],
+    "assignees": [],
+    "locked": false,
+    "comments": 0,
+    "closed_at": null,
+    "created_at": "2026-09-04T08:11:00Z",
+    "updated_at": "2026-09-04T08:11:00Z",
+    "pull_request": {
+      "url": "https://api.github.com/repos/mikechau1/cmpe272-issues-gw/pulls/10",
+      "html_url": "https://github.com/mikechau1/cmpe272-issues-gw/pull/10",
+      "diff_url": "https://github.com/mikechau1/cmpe272-issues-gw/pull/10.diff",
+      "merged_at": null
+    }
+  }
+]
